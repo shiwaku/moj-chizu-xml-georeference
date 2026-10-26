@@ -63,7 +63,9 @@ def run_case(
     window: float = 300.0,
     thetas: np.ndarray | None = None,
     scales: np.ndarray | None = None,
+    ref_options: dict | None = None,
 ) -> Result:
+    """ref_options は reference.build に渡す（fgd, public_edges など）。"""
     thetas = np.arange(-6, 6.5, 1.0) if thetas is None else thetas
     scales = np.array([0.98, 0.99, 1.0, 1.01, 1.02]) if scales is None else scales
     t0 = time.time()
@@ -78,19 +80,22 @@ def run_case(
     local = [affine_transform(g, inv) for g in case.geoms]
 
     bounds = (xmin.min() - window, ymin.min() - window, xmax.max() + window, ymax.max() + window)
-    ref = reference.build(dem_path, bounds, public, exclude={case.xml})
+    ref = reference.build(dem_path, bounds, public, exclude={case.xml}, **(ref_options or {}))
+    bpen = ref.boundary_penalty
 
     bd = search.sample_boundary(local)
     it = search.sample_interior(local)
     cands = search.global_search(
-        bd, ref.field, thetas, scales, interior=it, penalty=ref.penalty, top_k=5
-    )
+        bd, ref.field, thetas, scales, interior=it, penalty=ref.penalty, top_k=5,
+        boundary_penalty=bpen,
+    )  # fmt: skip
     refined = sorted(
         (
             search.refine(
                 bd, ref.field, c.transform, it, ref.penalty,
                 theta_bounds=(thetas.min() - 1, thetas.max() + 1),
                 scale_bounds=(scales.min() - 0.01, scales.max() + 0.01),
+                boundary_penalty=bpen,
             )
             for c in cands
         ),

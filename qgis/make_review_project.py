@@ -49,6 +49,14 @@ def outline(color: str, width: float, line: str = "solid"):
     return fill("0,0,0,0", color, width, "no", line)
 
 
+def flag_renderer(field: str, on: tuple, off: tuple) -> QgsRuleBasedRenderer:
+    """真偽値の列で塗り分ける（GPKG の真偽値は QGIS では bool として読まれるので式で判定する）。"""
+    rules = QgsRuleBasedRenderer(QgsRuleBasedRenderer.Rule(None))
+    for (symbol, label), expr in ((on, f'"{field}"'), (off, "ELSE")):
+        rules.rootRule().appendChild(QgsRuleBasedRenderer.Rule(symbol, 0, 0, expr, label))
+    return rules
+
+
 def vector(path: Path, layer: str, name: str) -> QgsVectorLayer | None:
     lyr = QgsVectorLayer(f"{path}|layername={layer}", name, "ogr")
     return lyr if lyr.isValid() else None
@@ -70,9 +78,10 @@ def main() -> None:
     ap.add_argument("--edges", type=Path, help="評価に使ったエッジ（VRT）")
     ap.add_argument("--aligned", type=Path, help="moj-georef align の出力 GPKG")
     ap.add_argument("--geocode", type=Path, help="moj-georef geocode-align の出力 GPKG")
+    ap.add_argument("--ortho", type=Path, help="オルソ画像（背景）")
     args = ap.parse_args()
     # 相対パスのままだと QGIS はプロジェクトファイルからの相対パスとして解釈するので、絶対パスにする
-    for k in ("background", "dem", "parcels", "eval", "edges", "aligned", "geocode"):
+    for k in ("background", "dem", "parcels", "eval", "edges", "aligned", "geocode", "ortho"):
         if (v := getattr(args, k)) is not None:
             setattr(args, k, v.resolve())
 
@@ -107,8 +116,14 @@ def main() -> None:
                 )
             )
             add(g, lyr)
-        if lyr := vector(args.geocode, "aligned", "位置合わせ後の筆（ジオコード＋DEM）"):
-            lyr.setRenderer(QgsRuleBasedRenderer(outline("#ffd400", 0.5)))
+        if lyr := vector(args.geocode, "aligned", "位置合わせ後の筆（ジオコード＋DEM＋基盤地図）"):
+            lyr.setRenderer(
+                flag_renderer(
+                    "reliable",
+                    (outline("#ffd400", 0.5), "信頼できる（gap≧1）"),
+                    (outline("#ff1744", 0.5, "dash"), "要確認"),
+                )
+            )
             add(g, lyr)
         if lyr := vector(args.geocode, "aligned_coarse", "位置合わせ後の筆（ジオコードのみ）"):
             lyr.setRenderer(QgsRuleBasedRenderer(outline("#d500f9", 0.4, "dash")))
@@ -131,10 +146,13 @@ def main() -> None:
     if args.eval and args.eval.exists():
         g = root.addGroup("評価（公共座標系の図郭を崩して戻す）")
         if lyr := vector(args.eval, "found", "結果の位置"):
-            r = QgsCategorizedSymbolRenderer("success")
-            r.addCategory(QgsRendererCategory(1, outline("#ff00ff", 0.5), "成功（平均誤差5m未満）"))
-            r.addCategory(QgsRendererCategory(0, outline("#ff1744", 0.5, "dash"), "失敗"))
-            lyr.setRenderer(r)
+            lyr.setRenderer(
+                flag_renderer(
+                    "success",
+                    (outline("#ff00ff", 0.5), "成功（平均誤差5m未満）"),
+                    (outline("#ff1744", 0.5, "dash"), "失敗"),
+                )
+            )
             add(g, lyr)
         if lyr := vector(args.eval, "truth", "正解の位置"):
             lyr.setRenderer(QgsRuleBasedRenderer(outline("#00e676", 0.6)))
@@ -169,10 +187,15 @@ def main() -> None:
         if lyr.isValid():
             lyr.setRenderer(QgsHillshadeRenderer(lyr.dataProvider(), 1, 315, 45))
             add(g, lyr, visible=False)
+    if args.ortho and args.ortho.exists():
+        lyr = QgsRasterLayer(str(args.ortho), "オルソ画像")
+        if lyr.isValid():
+            lyr.setCrs(QgsCoordinateReferenceSystem("EPSG:6671"))  # tfw のみで CRS 情報がない
+            add(g, lyr)
     if args.background and args.background.exists():
         lyr = QgsRasterLayer(str(args.background), "CS立体図")
         if lyr.isValid():
-            add(g, lyr)
+            add(g, lyr, visible=not (args.ortho and args.ortho.exists()))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     project.write(str(args.out.resolve()))

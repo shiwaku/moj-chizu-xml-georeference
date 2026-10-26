@@ -22,6 +22,7 @@ from shapely.geometry.base import BaseGeometry
 
 from moj_georef import dem
 from moj_georef.dem import Bounds, Grid
+from moj_georef.gsi_fgd import FgdTiles, building_polygons
 from moj_georef.search import DistanceField
 
 PSEUDO_PREFIXES = ("地区外",)
@@ -37,6 +38,7 @@ class Reference:
     penalty: Grid  # 筆の内部点で平均を取り、評価関数に足す
     edges: Grid
     angle: Grid
+    boundary_penalty: Grid | None = None  # 筆界の点で平均を取り、評価関数に足す（建物の内部など）
 
 
 class PublicParcels:
@@ -66,8 +68,16 @@ def build(
     n_bins: int = 6,
     angle_tolerance: float = 30.0,
     placed: list[BaseGeometry] | None = None,
+    public_edges: bool = True,
+    fgd: FgdTiles | None = None,
+    building_weight: float = 3.0,
 ) -> Reference:
-    """placed: すでに位置合わせ済みのエリア（重なってはいけないので禁止領域に加える）。"""
+    """位置合わせの参照画像を作る。
+
+    placed: すでに位置合わせ済みのエリア（重なってはいけないので禁止領域に加える）。
+    public_edges: 公共座標系の筆界をエッジに使うか（False なら禁止領域にだけ使う）。
+    fgd: 国土地理院 基盤地図情報。道路縁・水涯線をエッジに加え、建物の内部を筆界の罰則にする。
+    """
     g = dem.read_dem(dem_path, bounds)
     shape, tf = g.array.shape, g.transform
     curv = dem.curvature(g, sigma_m=1.0)
@@ -75,12 +85,22 @@ def build(
     angle = dem.line_orientation(Grid(np.abs(curv.array), tf)).array
     edges_arr = terrain.array.astype(bool)
 
-    # 公共座標系の筆界は線分ごとの向きを焼き込み、地形エッジより優先する
+    # 公共座標系の筆界・道路縁などは線分ごとの向きを焼き込み、地形エッジより優先する
     pubs = public.query(bounds, exclude)
+    lines: list[BaseGeometry] = [p.exterior for p in pubs] if public_edges else []
+    bpen = None
+    if fgd is not None:
+        feats = fgd.features(bounds, ["RdEdg", "WL", "BldL"])
+        lines += feats["RdEdg"] + feats["WL"]
+        blds = [b for p in building_polygons(feats["BldL"]) if not (b := p.buffer(-0.5)).is_empty]
+        if blds:
+            mask = rasterize(blds, out_shape=shape, transform=tf).astype("float32")
+            bpen = Grid(building_weight * mask, tf)
     segs = [
         (LineString([a, b]).buffer(0.3), np.degrees(np.arctan2(b[1] - a[1], b[0] - a[0])) % 180)
-        for p in pubs
-        for a, b in pairwise(p.exterior.coords)
+        for line in lines
+        for part in getattr(line, "geoms", [line])
+        for a, b in pairwise(part.coords)
         if a != b
     ]
     if segs:
@@ -96,8 +116,8 @@ def build(
     others = pubs + list(placed or [])
     insets = [x for p in others if not (x := p.buffer(-forbidden_inset)).is_empty]
     forb = rasterize(insets, out_shape=shape, transform=tf) if insets else np.zeros(shape)
-    # 2m 四方のエッジ密度（森林の雑音や、筆の内部を横切る段差を検出する）
+    # 2m 四方の地形エッジ密度（森林の雑音や、筆の内部を横切る段差を検出する）
     k = max(int(round(2.0 / g.res)), 1)
-    clutter = ndimage.uniform_filter(edges.array.astype("float32"), size=k)
+    clutter = ndimage.uniform_filter(terrain.array.astype("float32"), size=k)
     penalty = forbidden_weight * forb + clutter_weight * clutter
-    return Reference(field, Grid(penalty.astype("float32"), tf), edges, angle_grid)
+    return Reference(field, Grid(penalty.astype("float32"), tf), edges, angle_grid, bpen)

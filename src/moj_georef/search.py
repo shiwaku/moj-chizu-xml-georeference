@@ -146,10 +146,15 @@ def global_search(
     penalty_weight: float = 1.0,
     factor: int = 2,
     top_k: int = 5,
+    boundary_penalty: Grid | None = None,
 ) -> list[Candidate]:
-    """全域探索。筆の内部点で penalty 画像の平均を取り、penalty_weight 倍して加える。"""
+    """全域探索。筆の内部点で penalty 画像の平均を取り、penalty_weight 倍して加える。
+
+    boundary_penalty があれば、筆界の点でその平均を取って加える（建物の内部を通る筆界など）。
+    """
     ds = [_downsample(g, factor) for g in field.grids]
     f = _downsample(penalty, factor) if penalty is not None else None
+    bp = _downsample(boundary_penalty, factor) if boundary_penalty is not None else None
     tf, res = ds[0].transform, ds[0].res
     center = tuple(boundary.xy.mean(axis=0))
     n = len(boundary.xy)
@@ -175,6 +180,8 @@ def global_search(
                 if len(sel):
                     cost += _correlate(ds[k].array, sel, origin)[: out_shape[0], : out_shape[1]]
             cost /= n
+            if bp is not None:
+                cost += _correlate(bp.array, rc, origin)[: out_shape[0], : out_shape[1]] / n
             if use_penalty:
                 ir = pts[1]
                 ov = _correlate(f.array, ir, origin)[: out_shape[0], : out_shape[1]] / len(ir)
@@ -204,7 +211,12 @@ def sample_grid(grid: Grid, xy: np.ndarray, fill: float) -> np.ndarray:
     return ndimage.map_coordinates(grid.array, rc.T, order=1, mode="constant", cval=fill)
 
 
-def chamfer(field: DistanceField, boundary: Boundary, t: Similarity) -> float:
+def chamfer(
+    field: DistanceField,
+    boundary: Boundary,
+    t: Similarity,
+    boundary_penalty: Grid | None = None,
+) -> float:
     xy = t.apply(boundary.xy)
     bins = field.bin_of(boundary.angle + t.theta_deg)
     total = 0.0
@@ -212,6 +224,8 @@ def chamfer(field: DistanceField, boundary: Boundary, t: Similarity) -> float:
         sel = bins == k
         if sel.any():
             total += sample_grid(field.grids[k], xy[sel], field.max_dist).sum()
+    if boundary_penalty is not None:
+        total += sample_grid(boundary_penalty, xy, 0.0).sum()
     return total / len(xy)
 
 
@@ -225,6 +239,7 @@ def refine(
     max_shift: float = 20.0,
     theta_bounds: tuple[float, float] = (-180.0, 180.0),
     scale_bounds: tuple[float, float] = (0.95, 1.05),
+    boundary_penalty: Grid | None = None,
 ) -> Candidate:
     """Nelder-Mead で (tx, ty, theta, scale) を精密化する。
 
@@ -242,7 +257,7 @@ def refine(
 
     def cost(v: np.ndarray) -> float:
         t = build(v)
-        return chamfer(field, boundary, t) + penalty_weight * overlap(t)
+        return chamfer(field, boundary, t, boundary_penalty) + penalty_weight * overlap(t)
 
     x0 = np.array([init.tx, init.ty, init.theta_deg, init.scale])
     step = np.array([2.0, 2.0, 0.5, 0.005])
@@ -260,4 +275,4 @@ def refine(
         options={"initial_simplex": simplex, "xatol": 0.01, "fatol": 1e-4, "maxiter": 2000},
     )
     t = build(res.x)
-    return Candidate(t, chamfer(field, boundary, t), overlap(t))
+    return Candidate(t, chamfer(field, boundary, t, boundary_penalty), overlap(t))

@@ -87,6 +87,25 @@ def cmd_prepare(args: argparse.Namespace) -> None:
     print(f"wrote {out}", file=sys.stderr)
 
 
+def _ref_options(args: argparse.Namespace) -> dict:
+    """参照データの選択（--fgd / --no-public-edges）を reference.build の引数にする。"""
+    from moj_georef.gsi_fgd import FgdTiles
+
+    opts: dict = {"public_edges": not args.no_public_edges}
+    if args.fgd:
+        opts["fgd"] = FgdTiles(Path("data/cache/fgd"))
+    return opts
+
+
+def _add_ref_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--fgd", action="store_true", help="国土地理院 基盤地図情報（道路縁・建物）を使う"
+    )
+    p.add_argument(
+        "--no-public-edges", action="store_true", help="公共座標系の筆界をエッジに使わない"
+    )
+
+
 def cmd_evaluate(args: argparse.Namespace) -> None:
     """公共座標系の図郭を崩して位置合わせし、元の位置との誤差を CSV に出す。"""
     import numpy as np
@@ -95,6 +114,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     from moj_georef import evaluate
 
     public, cases = evaluate.load_city(args.zip)
+    ref_options = _ref_options(args)
     with rasterio.open(args.dem) as src:
         db = src.bounds
     margin = 400.0
@@ -123,7 +143,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
              "score", "overlap", "second_gap", "error_mean", "error_max", "seconds"]
         )  # fmt: skip
         for c in picked:
-            r = evaluate.run_case(c, public, args.dem, rng)
+            r = evaluate.run_case(c, public, args.dem, rng, ref_options=ref_options)
             w.writerow(
                 [r.case, r.n_parcels, f"{r.truth.theta_deg:.2f}", f"{r.truth.scale:.4f}",
                  f"{r.found.theta_deg:.2f}", f"{r.found.scale:.4f}", f"{r.score:.2f}",
@@ -200,6 +220,7 @@ def cmd_geocode_align(args: argparse.Namespace) -> None:
 
     city = align.load_city(args.zip)
     xmls = [m for m in city.arbitrary if not args.xml or m.file in args.xml]
+    ref_options = _ref_options(args)
     geocoder = GsiGeocoder(args.cache)
     try:
         areas = two_stage.build_areas(xmls, geocoder, args.pref_name, args.epsg, args.gap)
@@ -208,21 +229,41 @@ def cmd_geocode_align(args: argparse.Namespace) -> None:
 
     # 対応点の多い（信頼できる）エリアから順に置き、置いた範囲は次のエリアの禁止領域にする
     areas.sort(key=lambda a: -a.n_unique)
+    areas = [
+        a
+        for a in areas
+        if len(a.parcels) >= args.min_parcels and a.coarse and a.coarse.transform is not None
+    ]
     placed: list = []
+    if args.dem:
+        for a in areas:
+            if a.n_unique >= args.min_unique:
+                two_stage.refine(a, city.public, args.dem, placed, ref_options=ref_options)
+                if two_stage.is_reliable(a):
+                    placed.append(unary_union(a.geoms()))
+        # 2周目: 信頼できなかったエリアを、信頼できたエリアの回転の中央値を中心に広く探し直す
+        theta0 = two_stage.consensus_theta(areas)
+        print(f"consensus theta: {theta0}", file=sys.stderr)
+        if theta0 is not None:
+            for a in areas:
+                if not two_stage.is_reliable(a):
+                    two_stage.refine_wide(
+                        a, city.public, args.dem, placed, theta0, ref_options=ref_options
+                    )
+                    if two_stage.is_reliable(a):
+                        placed.append(unary_union(a.geoms()))
+
     coarse_feats: list[export.Feature] = []
     final_feats: list[export.Feature] = []
     anchor_feats: list[export.Feature] = []
     residual_feats: list[export.Feature] = []
     for a in areas:
-        if len(a.parcels) < args.min_parcels or a.coarse is None or a.coarse.transform is None:
-            continue
-        if args.dem and a.n_unique >= args.min_unique:
-            two_stage.refine(a, city.public, args.dem, placed)
         c, f = a.coarse.transform, a.final
         summary = {
             "xml": a.xml.file, "map_name": a.xml.header["地図名"], "area": a.id,
             "n_parcels": len(a.parcels), "n_anchors": len(a.keys), "n_unique": a.n_unique,
             "coarse_rmse": a.coarse.rmse, "coarse_theta": c.theta_deg, "status": a.status,
+            "reliable": two_stage.is_reliable(a),
             "score": f.score if f else None, "penalty": f.overlap if f else None,
             "second_gap": a.second_gap,
             "theta": f.transform.theta_deg if f else None,
@@ -230,8 +271,8 @@ def cmd_geocode_align(args: argparse.Namespace) -> None:
         }  # fmt: skip
         print(
             f"{a.id:22s} {a.xml.header['地図名']:14s} parcels={len(a.parcels):4d} "
-            f"anchors={len(a.keys):3d} unique={a.n_unique:3d} rmse={a.coarse.rmse:6.1f} "
-            f"theta0={c.theta_deg:+7.2f} -> {a.status}"
+            f"unique={a.n_unique:3d} rmse={a.coarse.rmse:6.1f} theta0={c.theta_deg:+7.2f} "
+            f"-> {a.status}{' RELIABLE' if two_stage.is_reliable(a) else ''}"
             + (
                 f" score={f.score:.2f} pen={f.overlap:.2f} gap={a.second_gap:.2f} "
                 f"theta={f.transform.theta_deg:+.2f} s={f.transform.scale:.3f}"
@@ -245,7 +286,6 @@ def cmd_geocode_align(args: argparse.Namespace) -> None:
         if f:
             geoms = a.geoms(f.transform)
             final_feats += [({**summary, **at}, g) for at, g in zip(attrs, geoms, strict=True)]
-            placed.append(unary_union(geoms))
         moved = c.apply(a.src)
         res = np.hypot(*(moved - a.dst).T)
         for k, p0, p1, r in zip(a.keys, moved, a.dst, res, strict=True):
@@ -288,6 +328,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, default=Path("data/eval/result.csv"))
     p.add_argument("--success-m", type=float, default=5.0, help="成功とみなす平均誤差 [m]")
+    _add_ref_args(p)
     p.set_defaults(func=cmd_evaluate)
 
     p = sub.add_parser("align", help="任意座標系の地区を位置合わせする")
@@ -309,6 +350,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--dem", help="指定すると DEM・筆界で細かく合わせる")
     p.add_argument("--min-parcels", type=int, default=5)
     p.add_argument("--min-unique", type=int, default=3, help="細かく合わせる最小の対応点数")
+    _add_ref_args(p)
     p.add_argument("--out", type=Path, help="出力 GPKG")
     p.set_defaults(func=cmd_geocode_align)
 

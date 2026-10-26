@@ -88,6 +88,7 @@ def refine(
     shift: float = 80.0,
     dtheta: float = 8.0,
     scales: np.ndarray | None = None,
+    ref_options: dict | None = None,
 ) -> None:
     """粗い合わせの結果の周り（±shift [m]・±dtheta [deg]）だけを DEM・筆界で探索する。"""
     init = area.coarse.transform if area.coarse else None
@@ -98,15 +99,17 @@ def refine(
     x0, y0, x1, y1 = moved.bounds
     m = shift + 20
     bounds = (x0 - m, y0 - m, x1 + m, y1 + m)
-    ref = reference.build(dem_path, bounds, public, placed=placed)
+    ref = reference.build(dem_path, bounds, public, placed=placed, **(ref_options or {}))
+    bpen = ref.boundary_penalty
 
     local = [p.geometry for p in area.parcels]
     bd = search.sample_boundary(local)
     it = search.sample_interior(local)
     thetas = init.theta_deg + np.arange(-dtheta, dtheta + 0.5, 1.0)
     cands = search.global_search(
-        bd, ref.field, thetas, scales, interior=it, penalty=ref.penalty, top_k=5
-    )
+        bd, ref.field, thetas, scales, interior=it, penalty=ref.penalty, top_k=5,
+        boundary_penalty=bpen,
+    )  # fmt: skip
     # 初期位置から shift を超えて離れた候補は捨てる
     c0 = init.apply(bd.xy.mean(axis=0, keepdims=True))[0]
     cands = [
@@ -122,6 +125,7 @@ def refine(
                 bd, ref.field, c.transform, it, ref.penalty,
                 theta_bounds=(thetas.min() - 1, thetas.max() + 1),
                 scale_bounds=(scales.min(), scales.max()),
+                boundary_penalty=bpen,
             )
             for c in cands
         ),
@@ -132,3 +136,43 @@ def refine(
         area.second_gap = (refined[1].score + refined[1].overlap) - (
             refined[0].score + refined[0].overlap
         )
+
+
+RELIABLE_GAP = 1.0  # 1位と2位の評価値の差がこれ以上なら信頼できるとみなす
+
+
+def is_reliable(area: Area) -> bool:
+    return area.final is not None and area.second_gap >= RELIABLE_GAP
+
+
+def consensus_theta(areas: list[Area]) -> float | None:
+    """信頼できるエリアの回転の中央値（同じ時期・同じ作成者の図面は傾きが揃っていることが多い）。"""
+    thetas = [a.final.transform.theta_deg for a in areas if is_reliable(a) and a.final]
+    return float(np.median(thetas)) if thetas else None
+
+
+def refine_wide(
+    area: Area,
+    public: PublicParcels,
+    dem_path: str | Path,
+    placed: list[BaseGeometry],
+    theta0: float,
+    shift: float = 250.0,
+    dtheta: float = 10.0,
+    ref_options: dict | None = None,
+) -> None:
+    """粗い合わせの回転が信頼できないエリアを、共通の回転 theta0 を中心に広い範囲で探し直す。
+
+    位置の初期値はジオコード結果の重心（対応点がなければ探さない）。
+    """
+    if not len(area.dst):
+        return
+    local_c = tuple(np.array([p.geometry.centroid.coords[0] for p in area.parcels]).mean(axis=0))
+    tx, ty = area.dst.mean(axis=0)
+    init = search.Similarity(float(tx), float(ty), theta0, 1.0, local_c)
+    saved = area.coarse
+    area.coarse = anchor.AnchorFit(init, np.ones(0, bool), np.zeros(0), 0)
+    try:
+        refine(area, public, dem_path, placed, shift=shift, dtheta=dtheta, ref_options=ref_options)
+    finally:
+        area.coarse = saved
