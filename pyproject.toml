@@ -1,0 +1,43 @@
+[project]
+name = "moj-georef"
+version = "0.1.0"
+description = "法務省地図XMLの任意座標系データを位置合わせする実験"
+readme = "README.md"
+authors = [
+    { name = "shiwaku", email = "yohei.shiwaku@gmail.com" }
+]
+requires-python = ">=3.15.1"
+dependencies = [
+    "certifi>=2026.10.19",
+    "pyproj>=3.8.0",
+    "rasterio>=1.5.2",
+    "requests>=2.34.2",
+    "scipy>=1.18.1",
+    "shapely>=2.2.0",
+]
+
+[project.scripts]
+moj-georef = "moj_georef:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.13.5"
+exclude-newer = "7 days"
+# 技術標準の certifi 最低バージョン (2026.10.19) が 7 日以内の公開のため個別に許可
+exclude-newer-package = { certifi = "2026-10-24T00:00:00Z" }
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
