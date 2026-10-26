@@ -2,7 +2,7 @@
 
 法務省 登記所備付地図データ（地図XML）のうち、任意座標系の地区を公共座標系へ位置合わせする実験リポジトリ。
 
-設計は [docs/design.md](docs/design.md) を参照。
+位置合わせの手法は [docs/method.md](docs/method.md)、当初の設計と経緯は [docs/design.md](docs/design.md) を参照。
 
 ## セットアップ
 
@@ -53,3 +53,11 @@ uv run ruff check . && uv run ruff format .
 ## データ
 
 - [G空間情報センター 登記所備付地図データ](https://front.geospatial.jp/moj-chizu-xml-download/)（法務省、利用規約に従う）
+- 国土地理院 [住所検索 API](https://msearch.gsi.go.jp/address-search/AddressSearch)、
+  [基盤地図情報ベクトルタイル（experimental_fgd）](https://github.com/gsi-cyberjapan/experimental_fgd)
+  （[国土地理院コンテンツ利用規約](https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html)に従う）
+- 広島県 [DoboX](https://hiroshima-dobox.jp/)（0.5m DEM・オルソ画像）
+
+## ライセンス
+
+[MIT](LICENSE)。データはそれぞれの利用規約に従う。

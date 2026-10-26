@@ -2,6 +2,9 @@
 
 ステータス: ドラフト（2026-10-26 更新: 基盤地図情報を加えた2段構えで熊野町の団地を位置合わせできた）
 
+> 現在の実装の手法は [method.md](method.md) にまとめた。この文書は当初の設計と検討の経緯で、
+> 「4. 各段階の設計」以降には実装していない計画（局所補正・GCP 出力・A/B/C 振り分けなど）も含む。
+
 ## 1. 目的とスコープ
 
 法務省 登記所備付地図データ（地図XML）のうち `<座標系>任意座標系</座標系>` の地区について、
@@ -211,27 +214,35 @@ DEM・公共座標系の筆界とのチャンファーマッチングで細か�
 4. **局所補正と GCP 出力**: TPS と QGIS での確認フローまで通す。
 5. **合成データによる評価**: しきい値を決め、県全体に流す。
 
-## 8. リポジトリ構成（予定）
+## 8. リポジトリ構成
 
 ```
 moj-chizu-xml-georeference/
 ├── pyproject.toml / uv.lock / .python-version
 ├── README.md
 ├── docs/
-│   └── design.md            # この文書
+│   ├── design.md            # この文書（当初の設計と経緯）
+│   └── method.md            # 現在の位置合わせの手法
+├── qgis/
+│   └── make_review_project.py  # 確認用 QGIS プロジェクトの作成（PyQGIS）
 ├── src/moj_georef/
-│   ├── cli.py               # moj-georef コマンド（survey / prepare / align / evaluate）
+│   ├── cli.py               # moj-georef コマンド（survey / prepare / evaluate / align / geocode-align）
 │   ├── catalog.py           # G空間情報センターからの一覧取得・ダウンロード
 │   ├── xml_summary.py       # 地図XML のメタ情報集計（座標系の調査）
-│   ├── parcels.py           # mojxml による変換、ブロック分割            （予定）
-│   ├── reference.py         # 参照データ（隣接地区・基盤地図・DEM）→ 距離画像 （予定）
-│   ├── search.py            # ③全域探索                                （予定）
-│   ├── refine.py            # ④精密化・GCP 生成                         （予定）
-│   ├── quality.py           # ⑤品質評価・振り分け                       （予定）
-│   └── export.py            # ⑥GPKG・.points・QGIS プロジェクト出力       （予定）
+│   ├── parcels.py           # 地図XML → 筆ポリゴン（独自パーサ）
+│   ├── anchor.py            # ①エリア分割、②地番の対応点からの相似変換
+│   ├── geocode.py           # 国土地理院 住所検索
+│   ├── gsi_fgd.py           # 国土地理院 基盤地図情報ベクトルタイル
+│   ├── dem.py               # DEM の読み込み・曲率エッジ・距離画像
+│   ├── reference.py         # ③の参照画像（距離画像・罰則画像）
+│   ├── search.py            # ③の探索（FFT による全探索・Nelder-Mead）
+│   ├── two_stage.py         # ②→③→④の2段構え・2周目
+│   ├── align.py             # DEM・筆界だけの全域探索（旧方式）
+│   ├── evaluate.py          # 公共座標系の図郭を崩して戻す評価
+│   └── export.py            # GPKG 出力（ogr2ogr）
 ├── tests/                   # 合成データを使ったユニットテスト
 └── data/                    # ダウンロード・中間生成物（Git 管理外）
 ```
 
-GDAL/OGR はコマンド（`ogr2ogr` / `gdal_rasterize` / `gdal_proximity` / `gdaldem`）として呼ぶか、
-Python バインディングを使うかを PoC で決める（Windows 環境での依存解決の容易さを優先）。
+GDAL/OGR は Python バインディングを使わず、GPKG の書き出しだけ `ogr2ogr` コマンドを呼ぶ
+（Windows で GDAL の Python バインディングの依存解決が難しいため。ラスタの読み込みは rasterio）。
