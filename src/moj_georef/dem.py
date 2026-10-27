@@ -59,9 +59,11 @@ class Grid:
 
     @property
     def bounds(self) -> Bounds:
+        # affine 2.x（QGIS 同梱）は @ を持たず、3.x は * を非推奨にしているので係数で計算する
         h, w = self.array.shape
-        x0, y0 = self.transform @ (0, 0)
-        x1, y1 = self.transform @ (w, h)
+        t = self.transform
+        x0, y0 = t.c, t.f
+        x1, y1 = t.a * w + t.b * h + t.c, t.d * w + t.e * h + t.f
         return (x0, y1, x1, y0)
 
     def write(self, path: Path, crs: str = "EPSG:6671") -> None:

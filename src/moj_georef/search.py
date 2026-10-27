@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from affine import Affine
 from scipy import ndimage, optimize, signal
 from shapely.geometry.base import BaseGeometry
 
@@ -109,13 +110,18 @@ def _downsample(grid: Grid, factor: int) -> Grid:
         return grid
     h, w = (s // factor * factor for s in grid.array.shape)
     a = grid.array[:h, :w].reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
-    return Grid(a, grid.transform @ grid.transform.scale(factor))
+    t = grid.transform  # _apply と同じ理由で、演算子を使わずに組み立てる
+    return Grid(a, Affine(t.a * factor, t.b * factor, t.c, t.d * factor, t.e * factor, t.f))
+
+
+def _apply(t: Affine, x, y):
+    """t で (x, y) を変換する。affine 2.x は @ を持たず、3.x は * を非推奨にしているため。"""
+    return t.a * x + t.b * y + t.c, t.d * x + t.e * y + t.f
 
 
 def _to_pixels(xy: np.ndarray, grid: Grid) -> np.ndarray:
     """地図座標 → (row, col)（小数）。"""
-    inv = ~grid.transform
-    cols, rows = inv @ (xy[:, 0], xy[:, 1])
+    cols, rows = _apply(~grid.transform, xy[:, 0], xy[:, 1])
     return np.column_stack([rows - 0.5, cols - 0.5])
 
 
@@ -191,7 +197,7 @@ def global_search(
             mins = total == ndimage.minimum_filter(total, size=int(30 / res) | 1)
             for r, c in zip(*np.nonzero(mins), strict=True):
                 # 点群を (r - origin) pixel 動かす → 地図座標の平行移動
-                gx, gy = tf @ (c - origin[1] + 0.5, r - origin[0] + 0.5)
+                gx, gy = _apply(tf, c - origin[1] + 0.5, r - origin[0] + 0.5)
                 cand = Similarity(gx, gy, float(theta), float(scale), center)
                 results.append(Candidate(cand, float(cost[r, c]), float(ov[r, c])))
     results.sort(key=lambda c: c.score + penalty_weight * c.overlap)
