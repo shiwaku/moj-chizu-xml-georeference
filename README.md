@@ -43,6 +43,12 @@ uv run moj-georef geocode-align data/raw/34307-2400-2026.zip --dem <DEM.tif> --f
 - `--fgd` は国土地理院の基盤地図情報ベクトルタイル（experimental_fgd）を取得して `data/cache/fgd` にキャッシュする。
 - DEM は平面直角座標系（地図XMLと同じ系）の GeoTIFF / VRT。広島県の検証では 0.5m DEM（広島県 DoboX の航空レーザ測量成果から作成）を使った。
 
+## QGIS（Mapsuke）から使う
+
+[Mapsuke](https://github.com/MIERUNE/mapsuke) のチャットから位置合わせを呼ぶためのスキルを `skills/moj-georef/SKILL.md` に置いている。
+`~/.claude/skills/moj-georef/` にコピーすると、Mapsuke の設定の「Claude」→「スキル」に出る。
+QGIS 同梱の Python で `moj_georef.cli.main` を呼ぶので、uv 環境は要らない（QGIS 4.0.0 で確認）。
+
 ## 開発
 
 ```sh
