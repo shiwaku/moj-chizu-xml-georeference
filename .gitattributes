@@ -1,0 +1,3 @@
+# Mapsuke はスキルの先頭が "---
+" でないと name/description を読めないので LF に固定する
+SKILL.md text eol=lf
